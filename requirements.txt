@@ -1,5 +1,6 @@
 streamlit
 langchain
+langchain-huggingface[full]
 langchain-community
 langchain-ollama
 chromadb
