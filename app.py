@@ -14,14 +14,52 @@ st.set_page_config(page_title="Nihongo Assistant", layout="wide")
 st.title("🇯🇵 AI Asisten Belajar Bahasa Jepang")
 
 # ── Constants ─────────────────────────────────────────────
-TEXT_PATH = "minna_text.txt"
-DB_PATH = "./chroma_db_jepang"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "chroma_db_jepang")
+OCR_SCRIPT_PATH = os.path.join(BASE_DIR, "run_ocr_once.py")
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def get_ocr_output_path(script_path):
+    """Read OUTPUT_PATH value from run_ocr_once.py if available."""
+    if not os.path.exists(script_path):
+        return None
+
+    try:
+        with open(script_path, "r", encoding="utf-8") as f:
+            script = f.read()
+    except OSError:
+        return None
+
+    match = re.search(r'OUTPUT_PATH\s*=\s*r?["\']([^"\']+)["\']', script)
+    if match:
+        return os.path.normpath(match.group(1))
+    return None
+
+
+def resolve_text_path():
+    """Find minna_text.txt from common run locations."""
+    ocr_output_path = get_ocr_output_path(OCR_SCRIPT_PATH)
+    candidates = [
+        ocr_output_path,
+        os.path.join(BASE_DIR, "minna_text.txt"),
+        os.path.join(os.getcwd(), "minna_text.txt"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    # Default to project file location for creation guidance.
+    return ocr_output_path or os.path.join(BASE_DIR, "minna_text.txt")
+
+
+TEXT_PATH = resolve_text_path()
 
 # ── Session State ─────────────────────────────────────────
 if "vector_db" not in st.session_state:
     st.session_state.vector_db = None
+if "text_path" not in st.session_state:
+    st.session_state.text_path = TEXT_PATH
 
 # ── Helper Functions ──────────────────────────────────────
 
@@ -86,6 +124,43 @@ def get_page_content(path, page_num):
     return None
 
 
+def get_lesson_content(path, lesson_num):
+    """Extract chunks related to a specific lesson number from OCR text."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+    # Flexible patterns to handle OCR variants (Pelajaran 9 / Lesson 9 / 第9課)
+    lesson_pattern = (
+        rf"(pelajaran|lesson)\s*[:\-]?\s*{lesson_num}\b|"
+        rf"第\s*{lesson_num}\s*課"
+    )
+    lines = raw.splitlines()
+
+    matching_indices = []
+    for i, line in enumerate(lines):
+        if re.search(lesson_pattern, line, flags=re.IGNORECASE):
+            matching_indices.append(i)
+
+    if not matching_indices:
+        return None
+
+    snippets = []
+    for idx in matching_indices[:3]:
+        start = max(0, idx - 5)
+        end = min(len(lines), idx + 21)
+        snippet = "\n".join(lines[start:end]).strip()
+        snippet = clean_text(snippet)
+        if snippet:
+            snippets.append(snippet)
+
+    if not snippets:
+        return None
+
+    # De-duplicate repeated OCR blocks
+    unique = list(dict.fromkeys(snippets))
+    return "\n\n---\n\n".join(unique)
+
+
 def get_embeddings():
     """Load the multilingual embedding model."""
     return HuggingFaceEmbeddings(model_name=EMBED_MODEL)
@@ -94,13 +169,21 @@ def get_embeddings():
 # ── Sidebar ───────────────────────────────────────────────
 with st.sidebar:
     st.header("Setup Materi")
+    st.caption("Atur lokasi file teks Minna no Nihongo")
+    st.session_state.text_path = st.text_input(
+        "Path `minna_text.txt`",
+        value=st.session_state.text_path,
+        help="Bisa isi path folder lain, contoh: D:/data/minna_text.txt",
+    ).strip().strip('"')
+    active_text_path = st.session_state.text_path or TEXT_PATH
 
     # Status check
-    if os.path.exists(TEXT_PATH):
-        size_kb = os.path.getsize(TEXT_PATH) / 1024
+    if os.path.exists(active_text_path):
+        size_kb = os.path.getsize(active_text_path) / 1024
         st.success(f"✅ File teks ditemukan ({size_kb:.0f} KB)")
+        st.caption(f"Path aktif: `{active_text_path}`")
     else:
-        st.error("❌ minna_text.txt belum ada. Jalankan run_ocr_once.py dulu!")
+        st.error("❌ File teks belum ditemukan pada path di atas.")
         st.code("python run_ocr_once.py", language="bash")
 
     if os.path.exists(DB_PATH):
@@ -109,10 +192,10 @@ with st.sidebar:
     st.divider()
 
     # Process text → vector DB
-    if os.path.exists(TEXT_PATH):
+    if os.path.exists(active_text_path):
         if st.button("🔄 Proses ke Database", use_container_width=True):
             with st.spinner("Membaca teks..."):
-                docs = load_pages_from_text(TEXT_PATH)
+                docs = load_pages_from_text(active_text_path)
 
             st.info(f"Total halaman dimuat: {len(docs)}")
 
@@ -203,27 +286,65 @@ if st.session_state.vector_db:
             temperature=0.2
         )
 
-        # ── Detect page-specific questions ───────────────
+        # ── Detect page-specific / lesson-specific questions ───────────────
         page_match = re.search(r'halaman\s*(\d+)', query.lower())
+        lesson_match = re.search(r'(pelajaran|lesson)\s*(\d+)', query.lower())
 
         if page_match:
             # Direct page lookup — bypass vector search entirely
             target_page = int(page_match.group(1))
 
-            if not os.path.exists(TEXT_PATH):
-                st.error("File minna_text.txt diperlukan untuk pencarian langsung per halaman.")
-                st.stop()
-
-            target_content = get_page_content(TEXT_PATH, target_page)
+            active_text_path = st.session_state.text_path or TEXT_PATH
+            target_content = get_page_content(active_text_path, target_page) if os.path.exists(active_text_path) else None
 
             if target_content:
                 context = f"[Hal. {target_page}]\n{target_content}"
             else:
-                context = f"Halaman {target_page} tidak ditemukan dalam buku."
+                # If text file is unavailable (or page missing), fallback to semantic retrieval.
+                retriever = st.session_state.vector_db.as_retriever(
+                    search_kwargs={"k": 8}
+                )
+                focused_query = f"halaman {target_page} Minna no Nihongo"
+                retrieved_docs = retriever.invoke(focused_query)
+                context = "\n\n---\n\n".join(
+                    f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
+                    for d in retrieved_docs
+                )
+
+                if not os.path.exists(active_text_path):
+                    st.warning("minna_text.txt tidak ditemukan, jadi menggunakan pencarian dari database vektor.")
 
             if show_debug:
                 with st.expander(f"📄 Konten halaman {target_page} (dari file teks langsung)"):
                     st.write(context)
+
+        elif lesson_match:
+            # Direct lesson lookup to avoid semantic miss for exact lesson requests
+            target_lesson = int(lesson_match.group(2))
+
+            active_text_path = st.session_state.text_path or TEXT_PATH
+            lesson_content = get_lesson_content(active_text_path, target_lesson) if os.path.exists(active_text_path) else None
+
+            if lesson_content:
+                context = f"[Pelajaran {target_lesson}]\n{lesson_content}"
+            else:
+                # Fallback to semantic retrieval with focused query if direct scan misses
+                retriever = st.session_state.vector_db.as_retriever(
+                    search_kwargs={"k": 8}
+                )
+                focused_query = f"Pelajaran {target_lesson} Minna no Nihongo"
+                retrieved_docs = retriever.invoke(focused_query)
+                context = "\n\n---\n\n".join(
+                    f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
+                    for d in retrieved_docs
+                )
+
+                if not os.path.exists(active_text_path):
+                    st.warning("minna_text.txt tidak ditemukan, jadi menggunakan pencarian dari database vektor.")
+
+            if show_debug:
+                with st.expander(f"📘 Konten pelajaran {target_lesson}"):
+                    st.write(context if context else "Tidak ada konteks ditemukan.")
 
         else:
             # Semantic search for general questions
