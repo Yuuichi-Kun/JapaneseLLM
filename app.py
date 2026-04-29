@@ -40,8 +40,10 @@ def get_ocr_output_path(script_path):
 
 def resolve_text_path():
     """Find minna_text.txt from common run locations."""
+    env_path = os.getenv("MINNA_TEXT_PATH")
     ocr_output_path = get_ocr_output_path(OCR_SCRIPT_PATH)
     candidates = [
+        env_path,
         ocr_output_path,
         os.path.join(BASE_DIR, "minna_text.txt"),
         os.path.join(os.getcwd(), "minna_text.txt"),
@@ -170,6 +172,18 @@ def get_embeddings():
 with st.sidebar:
     st.header("Setup Materi")
     st.caption("Atur lokasi file teks Minna no Nihongo")
+    uploaded_text = st.file_uploader(
+        "Atau upload `minna_text.txt` (untuk Streamlit Cloud)",
+        type=["txt"],
+        accept_multiple_files=False,
+    )
+    if uploaded_text is not None:
+        uploaded_text_path = os.path.join(BASE_DIR, "uploaded_minna_text.txt")
+        with open(uploaded_text_path, "wb") as f:
+            f.write(uploaded_text.getbuffer())
+        st.session_state.text_path = uploaded_text_path
+        st.success("✅ File upload berhasil. Path aktif diarahkan ke file upload.")
+
     st.session_state.text_path = st.text_input(
         "Path `minna_text.txt`",
         value=st.session_state.text_path,
@@ -185,6 +199,7 @@ with st.sidebar:
     else:
         st.error("❌ File teks belum ditemukan pada path di atas.")
         st.code("python run_ocr_once.py", language="bash")
+        st.caption("Di Streamlit Cloud, path lokal laptop (C:\\...) tidak bisa diakses.")
 
     if os.path.exists(DB_PATH):
         st.info("✅ Database vektor ditemukan")
@@ -330,13 +345,33 @@ if st.session_state.vector_db:
             else:
                 # Fallback to semantic retrieval with focused query if direct scan misses
                 retriever = st.session_state.vector_db.as_retriever(
-                    search_kwargs={"k": 8}
+                    search_kwargs={"k": 12}
                 )
-                focused_query = f"Pelajaran {target_lesson} Minna no Nihongo"
-                retrieved_docs = retriever.invoke(focused_query)
+                lesson_queries = [
+                    query,
+                    f"Pelajaran {target_lesson} Minna no Nihongo",
+                    f"Bab {target_lesson} Minna no Nihongo",
+                    f"Lesson {target_lesson} Minna no Nihongo",
+                    f"第{target_lesson}課",
+                ]
+                retrieved_docs = []
+                seen = set()
+                for q in lesson_queries:
+                    for doc in retriever.invoke(q):
+                        key = (doc.metadata.get("page"), doc.page_content[:120])
+                        if key not in seen:
+                            seen.add(key)
+                            retrieved_docs.append(doc)
+
+                lesson_num_pattern = rf"\b{target_lesson}\b|第\s*{target_lesson}\s*課"
+                filtered_docs = [
+                    d for d in retrieved_docs
+                    if re.search(lesson_num_pattern, d.page_content, flags=re.IGNORECASE)
+                ]
+                final_docs = filtered_docs[:8] if filtered_docs else retrieved_docs[:8]
                 context = "\n\n---\n\n".join(
                     f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
-                    for d in retrieved_docs
+                    for d in final_docs
                 )
 
                 if not os.path.exists(active_text_path):
