@@ -281,13 +281,16 @@ if (vector_db is not None) or text_mode_active:
         lesson_match = re.search(r'(pelajaran|lesson)\s*(\d+)', query.lower())
 
         if page_match:
-            # Page query: prioritize exact page metadata from vector DB.
+            # Page query: text-first, vector fallback only when text is unavailable.
             target_page = int(page_match.group(1))
 
             target_content = get_page_content(TEXT_PATH, target_page) if os.path.exists(TEXT_PATH) else None
 
             if target_content:
                 context = f"[Hal. {target_page}]\n{target_content}"
+            elif text_mode_active:
+                # In text-first mode, avoid Chroma query entirely.
+                context = f"Tidak ditemukan halaman {target_page} di `minna_text.txt`."
             else:
                 # First try exact metadata filter by page.
                 retrieved_docs = vector_db.similarity_search(
@@ -333,13 +336,22 @@ if (vector_db is not None) or text_mode_active:
                     st.write(context)
 
         elif lesson_match:
-            # Direct lesson lookup to avoid semantic miss for exact lesson requests
+            # Lesson query: text-first, vector fallback only when text is unavailable.
             target_lesson = int(lesson_match.group(2))
 
             lesson_content = get_lesson_content(TEXT_PATH, target_lesson) if os.path.exists(TEXT_PATH) else None
 
             if lesson_content:
                 context = f"[Pelajaran {target_lesson}]\n{lesson_content}"
+            elif text_mode_active:
+                # In text-first mode, avoid Chroma query entirely.
+                related_pages = retrieve_from_text(f"pelajaran {target_lesson}", all_pages, k=8)
+                context = "\n\n---\n\n".join(
+                    f"[Hal. {p['page']}]\n{p['content']}"
+                    for p in related_pages
+                )
+                if not context:
+                    context = f"Tidak ditemukan konteks pelajaran {target_lesson} di `minna_text.txt`."
             else:
                 # Fallback to semantic retrieval with focused query if direct scan misses
                 retriever = vector_db.as_retriever(
