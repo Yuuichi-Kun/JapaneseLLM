@@ -5,6 +5,7 @@ langchain-community
 langchain-ollama
 langchain-groq
 chromadb
+protobuf==3.20.3
 pypdf
 sentence-transformers
 pytesseract
