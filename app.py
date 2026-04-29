@@ -18,6 +18,7 @@ OCR_SCRIPT_PATH = os.path.join(BASE_DIR, "run_ocr_once.py")
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 PUBLIC_MODE = True
+TEXT_FIRST_MODE = True
 
 
 def get_ocr_output_path(script_path):
@@ -76,6 +77,48 @@ def sanitize_retrieved_docs(docs, min_chars: int = 60):
         d.page_content = content
         cleaned.append(d)
     return cleaned
+
+
+@st.cache_data(show_spinner=False)
+def load_all_pages(path):
+    """Load and clean all pages from minna_text.txt."""
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+    page_blocks = raw.split("=== HALAMAN ")
+    pages = []
+    for block in page_blocks:
+        if not block.strip():
+            continue
+        lines = block.split("\n", 1)
+        try:
+            page_num = int(lines[0].strip().replace("===", "").strip())
+        except ValueError:
+            continue
+
+        content = lines[1].strip() if len(lines) > 1 else ""
+        content = clean_text(content)
+        if len(content) >= 40:
+            pages.append({"page": page_num, "content": content})
+    return pages
+
+
+def retrieve_from_text(query: str, pages, k: int = 8):
+    """Lightweight keyword scoring retrieval from full text pages."""
+    terms = [t for t in re.findall(r"[a-zA-Z0-9一-龯ぁ-んァ-ン]+", query.lower()) if len(t) > 1]
+    if not terms:
+        return pages[:k]
+
+    scored = []
+    for p in pages:
+        content_l = p["content"].lower()
+        score = sum(content_l.count(t) for t in terms)
+        if score > 0:
+            scored.append((score, p))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [p for _, p in scored[:k]]
 
 
 def get_page_content(path, page_num):
@@ -173,12 +216,15 @@ def lesson_number_appears_in_text(lesson_num: int, text: str) -> bool:
 with st.sidebar:
     st.header("Status")
     vector_db = get_vector_db()
+    text_ready = os.path.exists(TEXT_PATH)
     if os.path.exists(DB_PATH):
         st.success("✅ Database siap digunakan")
     else:
         st.error("❌ Database belum ditemukan di server.")
 
-    if vector_db:
+    if TEXT_FIRST_MODE and text_ready:
+        st.info("✅ Mode teks aktif (langsung dari `minna_text.txt`)")
+    elif vector_db:
         st.info("✅ Asisten siap menjawab")
     else:
         st.warning("⏳ Menunggu database dimuat")
@@ -202,7 +248,10 @@ with st.sidebar:
 
 # ── Main Chat Area ────────────────────────────────────────
 vector_db = get_vector_db()
-if vector_db:
+all_pages = load_all_pages(TEXT_PATH)
+text_mode_active = TEXT_FIRST_MODE and len(all_pages) > 0
+
+if vector_db or text_mode_active:
 
     query = st.text_input(
         "Tanya apa saja tentang Minna no Nihongo:",
@@ -330,22 +379,34 @@ if vector_db:
 
         else:
             # Semantic search for general questions
-            retriever = vector_db.as_retriever(
-                search_kwargs={"k": 12}
-            )
-            retrieved_docs = sanitize_retrieved_docs(retriever.invoke(query))
+            if text_mode_active:
+                retrieved_pages = retrieve_from_text(query, all_pages, k=8)
+                context = "\n\n---\n\n".join(
+                    f"[Hal. {p['page']}]\n{p['content']}"
+                    for p in retrieved_pages
+                )
+                if show_debug:
+                    st.markdown("**Halaman teks yang ditemukan:**")
+                    for i, p in enumerate(retrieved_pages):
+                        with st.expander(f"Hasil {i+1} — hal. {p['page']}"):
+                            st.write(p["content"][:1200])
+            else:
+                retriever = vector_db.as_retriever(
+                    search_kwargs={"k": 12}
+                )
+                retrieved_docs = sanitize_retrieved_docs(retriever.invoke(query))
 
-            if show_debug:
-                st.markdown("**Chunks yang ditemukan:**")
-                for i, doc in enumerate(retrieved_docs):
-                    page = doc.metadata.get('page', '?')
-                    with st.expander(f"Chunk {i+1} — hal. {page}"):
-                        st.write(doc.page_content)
+                if show_debug:
+                    st.markdown("**Chunks yang ditemukan:**")
+                    for i, doc in enumerate(retrieved_docs):
+                        page = doc.metadata.get('page', '?')
+                        with st.expander(f"Chunk {i+1} — hal. {page}"):
+                            st.write(doc.page_content)
 
-            context = "\n\n---\n\n".join(
-                f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
-                for d in retrieved_docs
-            )
+                context = "\n\n---\n\n".join(
+                    f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
+                    for d in retrieved_docs
+                )
 
         # ── Shared prompt & chain ─────────────────────────
         prompt = PromptTemplate.from_template("""Kamu adalah asisten belajar bahasa Jepang yang membantu pengguna memahami isi buku Minna no Nihongo.
@@ -368,4 +429,4 @@ Jawaban (berdasarkan konteks di atas):""")
         st.markdown(response)
 
 else:
-    st.error("Database belum siap di server. Hubungi admin untuk memastikan folder `chroma_db_jepang` ikut ter-deploy.")
+    st.error("Sumber data belum siap. Pastikan `minna_text.txt` atau folder `chroma_db_jepang` tersedia di server.")
