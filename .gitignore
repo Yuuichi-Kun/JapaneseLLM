@@ -6,4 +6,3 @@ venv/
 __pycache__/
 *.pyd
 *.dll
-minna_text.txt
