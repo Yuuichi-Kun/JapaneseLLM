@@ -262,6 +262,11 @@ if (vector_db is not None) or text_mode_active:
         options=["Ringkas", "Detail", "Sangat Detail (Tutor Mode)"],
         index=1,
     )
+    reader_mode = st.selectbox(
+        "Tingkat pembaca:",
+        options=["Pemula (Bahasa sederhana)", "Menengah", "Lanjutan"],
+        index=0,
+    )
     show_debug = st.checkbox("Debug: tampilkan konteks yang digunakan")
 
     if query:
@@ -419,6 +424,7 @@ Jawab HANYA berdasarkan konteks di bawah ini. Jangan gunakan pengetahuan lain di
 Jika jawabannya tidak ada dalam konteks, katakan: "Informasi ini tidak ada dalam buku."
 Jawab dalam bahasa Indonesia kecuali diminta lain.
 Tingkat detail yang diminta pengguna: {answer_mode}
+Tingkat pembaca: {reader_mode}
 
 Aturan format jawaban:
 - Untuk mode "Ringkas": jawab 1-2 paragraf singkat.
@@ -431,6 +437,12 @@ Aturan format jawaban:
   5) Contoh kalimat (minimal 3) dari/berdasarkan konteks
   6) Ringkasan praktis + tips penggunaan
 - Jika konteks tidak memuat bagian tertentu, tulis jelas: "Bagian ini tidak dijelaskan di konteks buku."
+- Jika tingkat pembaca adalah "Pemula (Bahasa sederhana)":
+  - Gunakan kalimat pendek, kata sehari-hari, dan hindari istilah teknis berlebihan.
+  - Jika harus memakai istilah (mis. partikel, konjugasi), langsung beri arti sederhana dalam kurung.
+  - Tambahkan bagian "Versi gampangnya" (2-4 poin) di akhir.
+- Jika tingkat pembaca adalah "Menengah": tetap jelas, boleh pakai istilah dasar.
+- Jika tingkat pembaca adalah "Lanjutan": boleh lebih teknis dan padat.
 
 Konteks dari buku:
 {context}
@@ -444,7 +456,8 @@ Jawaban (berdasarkan konteks di atas):""")
             response = chain.invoke({
                 "context": context,
                 "question": query,
-                "answer_mode": answer_mode
+                "answer_mode": answer_mode,
+                "reader_mode": reader_mode,
             })
 
         st.markdown("### Jawaban:")
