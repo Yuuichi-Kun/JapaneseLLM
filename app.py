@@ -223,7 +223,7 @@ if st.session_state.vector_db:
         lesson_match = re.search(r'(pelajaran|lesson)\s*(\d+)', query.lower())
 
         if page_match:
-            # Direct page lookup — bypass vector search entirely
+            # Page query: prioritize exact page metadata from vector DB.
             target_page = int(page_match.group(1))
 
             target_content = get_page_content(TEXT_PATH, target_page) if os.path.exists(TEXT_PATH) else None
@@ -231,19 +231,39 @@ if st.session_state.vector_db:
             if target_content:
                 context = f"[Hal. {target_page}]\n{target_content}"
             else:
-                # If text file is unavailable (or page missing), fallback to semantic retrieval.
-                retriever = st.session_state.vector_db.as_retriever(
-                    search_kwargs={"k": 8}
+                # First try exact metadata filter by page.
+                retrieved_docs = st.session_state.vector_db.similarity_search(
+                    query=query,
+                    k=8,
+                    filter={"page": target_page}
                 )
-                focused_query = f"halaman {target_page} Minna no Nihongo"
-                retrieved_docs = retriever.invoke(focused_query)
+
+                # If empty, fallback to broader semantic retrieval.
+                if not retrieved_docs:
+                    retriever = st.session_state.vector_db.as_retriever(
+                        search_kwargs={"k": 10}
+                    )
+                    fallback_queries = [
+                        query,
+                        f"halaman {target_page} Minna no Nihongo",
+                        f"isi halaman {target_page}",
+                    ]
+                    seen = set()
+                    merged = []
+                    for q in fallback_queries:
+                        for doc in retriever.invoke(q):
+                            key = (doc.metadata.get("page"), doc.page_content[:120])
+                            if key not in seen:
+                                seen.add(key)
+                                merged.append(doc)
+                    retrieved_docs = merged[:8]
+
                 context = "\n\n---\n\n".join(
                     f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
                     for d in retrieved_docs
                 )
-
-                if not os.path.exists(TEXT_PATH):
-                    st.warning("minna_text.txt tidak ditemukan, jadi menggunakan pencarian dari database vektor.")
+                if not context:
+                    context = f"Tidak ditemukan konteks untuk halaman {target_page} di database."
 
             if show_debug:
                 with st.expander(f"📄 Konten halaman {target_page} (dari file teks langsung)"):
@@ -289,8 +309,8 @@ if st.session_state.vector_db:
                     for d in final_docs
                 )
 
-                if not os.path.exists(TEXT_PATH):
-                    st.warning("minna_text.txt tidak ditemukan, jadi menggunakan pencarian dari database vektor.")
+                if not context:
+                    context = f"Tidak ditemukan konteks untuk pelajaran {target_lesson} di database."
 
             if show_debug:
                 with st.expander(f"📘 Konten pelajaran {target_lesson}"):
