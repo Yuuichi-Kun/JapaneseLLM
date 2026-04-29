@@ -224,7 +224,7 @@ with st.sidebar:
 
     if TEXT_FIRST_MODE and text_ready:
         st.info("✅ Mode teks aktif (langsung dari `minna_text.txt`)")
-    elif vector_db:
+    elif vector_db is not None:
         st.info("✅ Asisten siap menjawab")
     else:
         st.warning("⏳ Menunggu database dimuat")
@@ -251,7 +251,7 @@ vector_db = get_vector_db()
 all_pages = load_all_pages(TEXT_PATH)
 text_mode_active = TEXT_FIRST_MODE and len(all_pages) > 0
 
-if vector_db or text_mode_active:
+if (vector_db is not None) or text_mode_active:
 
     query = st.text_input(
         "Tanya apa saja tentang Minna no Nihongo:",
