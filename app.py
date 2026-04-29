@@ -65,6 +65,19 @@ def clean_text(text):
     return text.strip()
 
 
+def sanitize_retrieved_docs(docs, min_chars: int = 60):
+    """Clean retrieved chunks and drop watermark/empty ones."""
+    cleaned = []
+    for d in docs:
+        content = clean_text(d.page_content or "")
+        if len(content) < min_chars:
+            continue
+        # Keep same metadata, but replace content with cleaned text
+        d.page_content = content
+        cleaned.append(d)
+    return cleaned
+
+
 def get_page_content(path, page_num):
     """Directly extract a single page's content from the text file."""
     with open(path, "r", encoding="utf-8") as f:
@@ -223,11 +236,12 @@ if vector_db:
                     k=8,
                     filter={"page": target_page}
                 )
+                retrieved_docs = sanitize_retrieved_docs(retrieved_docs)
 
                 # If empty, fallback to broader semantic retrieval.
                 if not retrieved_docs:
                     retriever = vector_db.as_retriever(
-                        search_kwargs={"k": 10}
+                        search_kwargs={"k": 20}
                     )
                     fallback_queries = [
                         query,
@@ -242,14 +256,18 @@ if vector_db:
                             if key not in seen:
                                 seen.add(key)
                                 merged.append(doc)
-                    retrieved_docs = merged[:8]
+                    retrieved_docs = sanitize_retrieved_docs(merged)[:8]
 
                 context = "\n\n---\n\n".join(
                     f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
                     for d in retrieved_docs
                 )
                 if not context:
-                    context = f"Tidak ditemukan konteks untuk halaman {target_page} di database."
+                    context = (
+                        f"Tidak ditemukan konteks bermakna untuk halaman {target_page} di database. "
+                        "Kemungkinan database vektor yang ter-deploy berisi hasil OCR yang belum bersih / kosong. "
+                        "Admin perlu rebuild `chroma_db_jepang` dari `minna_text.txt` yang benar."
+                    )
 
             if show_debug:
                 with st.expander(f"📄 Konten halaman {target_page} (dari file teks langsung)"):
@@ -288,6 +306,7 @@ if vector_db:
                             seen.add(key)
                             retrieved_docs.append(doc)
 
+                retrieved_docs = sanitize_retrieved_docs(retrieved_docs, min_chars=60)
                 filtered_docs = [
                     d for d in retrieved_docs
                     if lesson_number_appears_in_text(target_lesson, d.page_content)
@@ -299,7 +318,11 @@ if vector_db:
                 )
 
                 if not context:
-                    context = f"Tidak ditemukan konteks untuk pelajaran {target_lesson} di database."
+                    context = (
+                        f"Tidak ditemukan konteks bermakna untuk pelajaran {target_lesson} di database. "
+                        "Kemungkinan database vektor yang ter-deploy berisi hasil OCR yang belum bersih / kosong. "
+                        "Admin perlu rebuild `chroma_db_jepang` dari `minna_text.txt` yang benar."
+                    )
 
             if show_debug:
                 with st.expander(f"📘 Konten pelajaran {target_lesson}"):
@@ -308,9 +331,9 @@ if vector_db:
         else:
             # Semantic search for general questions
             retriever = vector_db.as_retriever(
-                search_kwargs={"k": 6}
+                search_kwargs={"k": 12}
             )
-            retrieved_docs = retriever.invoke(query)
+            retrieved_docs = sanitize_retrieved_docs(retriever.invoke(query))
 
             if show_debug:
                 st.markdown("**Chunks yang ditemukan:**")
