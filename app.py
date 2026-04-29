@@ -257,6 +257,11 @@ if (vector_db is not None) or text_mode_active:
         "Tanya apa saja tentang Minna no Nihongo:",
         placeholder="Contoh: Apa yang dipelajari pada halaman 25?"
     )
+    answer_mode = st.selectbox(
+        "Gaya jawaban:",
+        options=["Ringkas", "Detail", "Sangat Detail (Tutor Mode)"],
+        index=1,
+    )
     show_debug = st.checkbox("Debug: tampilkan konteks yang digunakan")
 
     if query:
@@ -409,10 +414,23 @@ if (vector_db is not None) or text_mode_active:
                 )
 
         # ── Shared prompt & chain ─────────────────────────
-        prompt = PromptTemplate.from_template("""Kamu adalah asisten belajar bahasa Jepang yang membantu pengguna memahami isi buku Minna no Nihongo.
+        prompt = PromptTemplate.from_template("""Kamu adalah asisten tutor bahasa Jepang yang membantu pengguna memahami isi buku Minna no Nihongo secara mendalam.
 Jawab HANYA berdasarkan konteks di bawah ini. Jangan gunakan pengetahuan lain di luar konteks.
 Jika jawabannya tidak ada dalam konteks, katakan: "Informasi ini tidak ada dalam buku."
 Jawab dalam bahasa Indonesia kecuali diminta lain.
+Tingkat detail yang diminta pengguna: {answer_mode}
+
+Aturan format jawaban:
+- Untuk mode "Ringkas": jawab 1-2 paragraf singkat.
+- Untuk mode "Detail": jelaskan poin utama + pola kalimat + fungsi partikel/kasus (jika ada) + 2 contoh.
+- Untuk mode "Sangat Detail (Tutor Mode)": berikan struktur berikut:
+  1) Inti pelajaran
+  2) Struktur/pola kalimat
+  3) Fungsi partikel/kasus (mis. は/が/を/に/で) jika muncul di konteks
+  4) Konjugasi/kata kerja yang relevan jika ada di konteks
+  5) Contoh kalimat (minimal 3) dari/berdasarkan konteks
+  6) Ringkasan praktis + tips penggunaan
+- Jika konteks tidak memuat bagian tertentu, tulis jelas: "Bagian ini tidak dijelaskan di konteks buku."
 
 Konteks dari buku:
 {context}
@@ -423,7 +441,11 @@ Jawaban (berdasarkan konteks di atas):""")
         chain = prompt | llm | StrOutputParser()
 
         with st.spinner("Mencari jawaban..."):
-            response = chain.invoke({"context": context, "question": query})
+            response = chain.invoke({
+                "context": context,
+                "question": query,
+                "answer_mode": answer_mode
+            })
 
         st.markdown("### Jawaban:")
         st.markdown(response)
