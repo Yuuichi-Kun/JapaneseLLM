@@ -167,6 +167,18 @@ def get_embeddings():
     return HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 
 
+def lesson_number_appears_in_text(lesson_num: int, text: str) -> bool:
+    """Match lesson markers in OCR/Japanese text (ASCII and fullwidth digits)."""
+    n = str(lesson_num)
+    n_fw = n.translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+    patterns = [
+        rf"第\s*{re.escape(n)}\s*課",
+        rf"第\s*{re.escape(n_fw)}\s*課",
+        rf"(?:pelajaran|lesson)\s*[:\-]?\s*{re.escape(n)}(?:\D|$)",
+    ]
+    return any(re.search(p, text, flags=re.IGNORECASE) for p in patterns)
+
+
 # ── Sidebar ───────────────────────────────────────────────
 with st.sidebar:
     st.header("Status")
@@ -182,6 +194,10 @@ with st.sidebar:
 
     if PUBLIC_MODE:
         st.caption("Mode publik aktif: pengguna tidak perlu upload file OCR.")
+        if os.path.exists(TEXT_PATH):
+            st.caption("Sumber teks penuh: `minna_text.txt` tersedia di server (lookup halaman/pelajaran lebih akurat).")
+        else:
+            st.caption("Di hosting: isi buku hanya lewat database vektor (`chroma_db_jepang`), bukan file `minna_text.txt`.")
 
     with st.expander("🛠️ Panduan Admin"):
         st.markdown("""
@@ -280,7 +296,10 @@ if st.session_state.vector_db:
             else:
                 # Fallback to semantic retrieval with focused query if direct scan misses
                 retriever = st.session_state.vector_db.as_retriever(
-                    search_kwargs={"k": 12}
+                    search_kwargs={"k": 16}
+                )
+                n_fw = str(target_lesson).translate(
+                    str.maketrans("0123456789", "０１２３４５６７８９")
                 )
                 lesson_queries = [
                     query,
@@ -288,6 +307,7 @@ if st.session_state.vector_db:
                     f"Bab {target_lesson} Minna no Nihongo",
                     f"Lesson {target_lesson} Minna no Nihongo",
                     f"第{target_lesson}課",
+                    f"第{n_fw}課",
                 ]
                 retrieved_docs = []
                 seen = set()
@@ -298,12 +318,11 @@ if st.session_state.vector_db:
                             seen.add(key)
                             retrieved_docs.append(doc)
 
-                lesson_num_pattern = rf"\b{target_lesson}\b|第\s*{target_lesson}\s*課"
                 filtered_docs = [
                     d for d in retrieved_docs
-                    if re.search(lesson_num_pattern, d.page_content, flags=re.IGNORECASE)
+                    if lesson_number_appears_in_text(target_lesson, d.page_content)
                 ]
-                final_docs = filtered_docs[:8] if filtered_docs else retrieved_docs[:8]
+                final_docs = filtered_docs[:10] if filtered_docs else retrieved_docs[:10]
                 context = "\n\n---\n\n".join(
                     f"[Hal. {d.metadata.get('page', '?')}]\n{d.page_content}"
                     for d in final_docs
