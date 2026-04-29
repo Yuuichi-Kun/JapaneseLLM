@@ -1,11 +1,9 @@
 import streamlit as st
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.documents import Document
 import os
 import re
 
@@ -58,10 +56,6 @@ def resolve_text_path():
 
 TEXT_PATH = resolve_text_path()
 
-# ── Session State ─────────────────────────────────────────
-if "vector_db" not in st.session_state:
-    st.session_state.vector_db = None
-
 # ── Helper Functions ──────────────────────────────────────
 
 def clean_text(text):
@@ -69,36 +63,6 @@ def clean_text(text):
     text = re.sub(r'www[\.,]japandaisuki[\.,]com', '', text)
     text = re.sub(r'\s{3,}', ' ', text)
     return text.strip()
-
-
-def load_pages_from_text(path):
-    """Parse the OCR text file into a list of LangChain Documents, one per page."""
-    with open(path, "r", encoding="utf-8") as f:
-        raw = f.read()
-
-    page_blocks = raw.split("=== HALAMAN ")
-    docs = []
-
-    for block in page_blocks:
-        if not block.strip():
-            continue
-
-        lines = block.split("\n", 1)
-        try:
-            page_num = int(lines[0].strip().replace("===", "").strip())
-        except ValueError:
-            continue
-
-        content = lines[1].strip() if len(lines) > 1 else ""
-        content = clean_text(content)
-
-        if content:
-            docs.append(Document(
-                page_content=content,
-                metadata={"page": page_num}
-            ))
-
-    return docs
 
 
 def get_page_content(path, page_num):
@@ -162,9 +126,22 @@ def get_lesson_content(path, lesson_num):
     return "\n\n---\n\n".join(unique)
 
 
+@st.cache_resource(show_spinner=False)
 def get_embeddings():
     """Load the multilingual embedding model."""
     return HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+
+
+@st.cache_resource(show_spinner=False)
+def get_vector_db():
+    """Load Chroma once and share across all sessions."""
+    if not os.path.exists(DB_PATH):
+        return None
+    embeddings = get_embeddings()
+    return Chroma(
+        persist_directory=DB_PATH,
+        embedding_function=embeddings
+    )
 
 
 def lesson_number_appears_in_text(lesson_num: int, text: str) -> bool:
@@ -182,12 +159,13 @@ def lesson_number_appears_in_text(lesson_num: int, text: str) -> bool:
 # ── Sidebar ───────────────────────────────────────────────
 with st.sidebar:
     st.header("Status")
+    vector_db = get_vector_db()
     if os.path.exists(DB_PATH):
         st.success("✅ Database siap digunakan")
     else:
         st.error("❌ Database belum ditemukan di server.")
 
-    if st.session_state.vector_db:
+    if vector_db:
         st.info("✅ Asisten siap menjawab")
     else:
         st.warning("⏳ Menunggu database dimuat")
@@ -210,16 +188,8 @@ with st.sidebar:
 
 
 # ── Main Chat Area ────────────────────────────────────────
-# Auto-load persisted DB for public deployment
-if st.session_state.vector_db is None and os.path.exists(DB_PATH):
-    with st.spinner("Menyiapkan database..."):
-        embeddings = get_embeddings()
-        st.session_state.vector_db = Chroma(
-            persist_directory=DB_PATH,
-            embedding_function=embeddings
-        )
-
-if st.session_state.vector_db:
+vector_db = get_vector_db()
+if vector_db:
 
     query = st.text_input(
         "Tanya apa saja tentang Minna no Nihongo:",
@@ -248,7 +218,7 @@ if st.session_state.vector_db:
                 context = f"[Hal. {target_page}]\n{target_content}"
             else:
                 # First try exact metadata filter by page.
-                retrieved_docs = st.session_state.vector_db.similarity_search(
+                retrieved_docs = vector_db.similarity_search(
                     query=query,
                     k=8,
                     filter={"page": target_page}
@@ -256,7 +226,7 @@ if st.session_state.vector_db:
 
                 # If empty, fallback to broader semantic retrieval.
                 if not retrieved_docs:
-                    retriever = st.session_state.vector_db.as_retriever(
+                    retriever = vector_db.as_retriever(
                         search_kwargs={"k": 10}
                     )
                     fallback_queries = [
@@ -295,7 +265,7 @@ if st.session_state.vector_db:
                 context = f"[Pelajaran {target_lesson}]\n{lesson_content}"
             else:
                 # Fallback to semantic retrieval with focused query if direct scan misses
-                retriever = st.session_state.vector_db.as_retriever(
+                retriever = vector_db.as_retriever(
                     search_kwargs={"k": 16}
                 )
                 n_fw = str(target_lesson).translate(
@@ -337,7 +307,7 @@ if st.session_state.vector_db:
 
         else:
             # Semantic search for general questions
-            retriever = st.session_state.vector_db.as_retriever(
+            retriever = vector_db.as_retriever(
                 search_kwargs={"k": 6}
             )
             retrieved_docs = retriever.invoke(query)
