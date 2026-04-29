@@ -194,7 +194,7 @@ with st.sidebar:
         st.markdown("""
         **Untuk update materi:**
         1. Jalankan `python run_ocr_once.py` di lokal (sekali saat update buku)
-        2. Bangun ulang folder `chroma_db_jepang`
+        2. Jalankan `python rebuild_db.py`
         3. Commit hasil terbaru ke GitHub
         4. Streamlit akan redeploy otomatis
         """)
