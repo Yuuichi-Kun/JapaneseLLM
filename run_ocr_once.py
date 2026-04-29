@@ -8,7 +8,8 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 POPPLER_PATH = r"C:\poppler-25.12.0\Library\bin"
 
 PDF_PATH = r"C:\Users\mhana\Downloads\Buku Materi Minna no Nihongo I (2nd edition).pdf"
-OUTPUT_PATH = r"C:\Users\mhana\Documents\minna_text.txt"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_PATH = os.path.join(BASE_DIR, "minna_text.txt")
 
 print("Mengkonversi PDF ke gambar... (ini butuh waktu)")
 images = convert_from_path(PDF_PATH, dpi=200, poppler_path=POPPLER_PATH)

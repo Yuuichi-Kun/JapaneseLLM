@@ -19,6 +19,7 @@ DB_PATH = os.path.join(BASE_DIR, "chroma_db_jepang")
 OCR_SCRIPT_PATH = os.path.join(BASE_DIR, "run_ocr_once.py")
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+PUBLIC_MODE = True
 
 
 def get_ocr_output_path(script_path):
@@ -60,8 +61,6 @@ TEXT_PATH = resolve_text_path()
 # ── Session State ─────────────────────────────────────────
 if "vector_db" not in st.session_state:
     st.session_state.vector_db = None
-if "text_path" not in st.session_state:
-    st.session_state.text_path = TEXT_PATH
 
 # ── Helper Functions ──────────────────────────────────────
 
@@ -170,122 +169,40 @@ def get_embeddings():
 
 # ── Sidebar ───────────────────────────────────────────────
 with st.sidebar:
-    st.header("Setup Materi")
-    st.caption("Atur lokasi file teks Minna no Nihongo")
-    uploaded_text = st.file_uploader(
-        "Atau upload `minna_text.txt` (untuk Streamlit Cloud)",
-        type=["txt"],
-        accept_multiple_files=False,
-    )
-    if uploaded_text is not None:
-        uploaded_text_path = os.path.join(BASE_DIR, "uploaded_minna_text.txt")
-        with open(uploaded_text_path, "wb") as f:
-            f.write(uploaded_text.getbuffer())
-        st.session_state.text_path = uploaded_text_path
-        st.success("✅ File upload berhasil. Path aktif diarahkan ke file upload.")
-
-    st.session_state.text_path = st.text_input(
-        "Path `minna_text.txt`",
-        value=st.session_state.text_path,
-        help="Bisa isi path folder lain, contoh: D:/data/minna_text.txt",
-    ).strip().strip('"')
-    active_text_path = st.session_state.text_path or TEXT_PATH
-
-    # Status check
-    if os.path.exists(active_text_path):
-        size_kb = os.path.getsize(active_text_path) / 1024
-        st.success(f"✅ File teks ditemukan ({size_kb:.0f} KB)")
-        st.caption(f"Path aktif: `{active_text_path}`")
+    st.header("Status")
+    if os.path.exists(DB_PATH):
+        st.success("✅ Database siap digunakan")
     else:
-        st.error("❌ File teks belum ditemukan pada path di atas.")
-        st.code("python run_ocr_once.py", language="bash")
-        st.caption("Di Streamlit Cloud, path lokal laptop (C:\\...) tidak bisa diakses.")
+        st.error("❌ Database belum ditemukan di server.")
 
-    if os.path.exists(DB_PATH):
-        st.info("✅ Database vektor ditemukan")
+    if st.session_state.vector_db:
+        st.info("✅ Asisten siap menjawab")
+    else:
+        st.warning("⏳ Menunggu database dimuat")
 
-    st.divider()
+    if PUBLIC_MODE:
+        st.caption("Mode publik aktif: pengguna tidak perlu upload file OCR.")
 
-    # Process text → vector DB
-    if os.path.exists(active_text_path):
-        if st.button("🔄 Proses ke Database", use_container_width=True):
-            with st.spinner("Membaca teks..."):
-                docs = load_pages_from_text(active_text_path)
-
-            st.info(f"Total halaman dimuat: {len(docs)}")
-
-            if not docs:
-                st.error("File teks kosong atau format salah.")
-                st.stop()
-
-            with st.expander("Preview halaman pertama (cek kualitas OCR)"):
-                st.write(docs[0].page_content[:500])
-
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=400,
-                chunk_overlap=80,
-                separators=["\n\n", "\n", "。", "、", " ", ""]
-            )
-
-            with st.spinner("Memotong teks menjadi chunks..."):
-                chunks = splitter.split_documents(docs)
-
-            st.info(f"Total chunks: {len(chunks)}")
-
-            with st.spinner("Membuat embedding (pertama kali ~400MB download)..."):
-                embeddings = get_embeddings()
-
-            with st.spinner("Menyimpan ke database vektor..."):
-                st.session_state.vector_db = Chroma.from_documents(
-                    documents=chunks,
-                    embedding=embeddings,
-                    persist_directory=DB_PATH
-                )
-
-            st.success(f"✅ Selesai! {len(chunks)} chunks tersimpan.")
-
-    # Load existing DB
-    if os.path.exists(DB_PATH):
-        if st.button("📂 Muat Database yang Ada", use_container_width=True):
-            with st.spinner("Memuat database..."):
-                embeddings = get_embeddings()
-                st.session_state.vector_db = Chroma(
-                    persist_directory=DB_PATH,
-                    embedding_function=embeddings
-                )
-            st.success("✅ Database berhasil dimuat!")
-
-    st.divider()
-
-    # Setup guide
-    with st.expander("📋 Panduan Setup"):
+    with st.expander("🛠️ Panduan Admin"):
         st.markdown("""
-        **Langkah pertama kali:**
-        1. Install Tesseract:
-           - Download: https://github.com/UB-Mannheim/tesseract/wiki
-           - Centang **Japanese** & **Indonesian** saat install
-        2. Install packages:
-        ```
-        pip install pytesseract pdf2image pillow
-        ```
-        3. Jalankan OCR:
-        ```
-        python run_ocr_once.py
-        ```
-        4. Klik **Proses ke Database**
-
-        **Selanjutnya:**
-        Cukup klik **Muat Database yang Ada**
-
-        **Contoh pertanyaan:**
-        - Apa yang dipelajari pada halaman 25?
-        - Apa arti partikel は?
-        - Cara menggunakan kata kerja bentuk て?
-        - Jelaskan pelajaran 1
+        **Untuk update materi:**
+        1. Jalankan `python run_ocr_once.py` di lokal (sekali saat update buku)
+        2. Bangun ulang folder `chroma_db_jepang`
+        3. Commit hasil terbaru ke GitHub
+        4. Streamlit akan redeploy otomatis
         """)
 
 
 # ── Main Chat Area ────────────────────────────────────────
+# Auto-load persisted DB for public deployment
+if st.session_state.vector_db is None and os.path.exists(DB_PATH):
+    with st.spinner("Menyiapkan database..."):
+        embeddings = get_embeddings()
+        st.session_state.vector_db = Chroma(
+            persist_directory=DB_PATH,
+            embedding_function=embeddings
+        )
+
 if st.session_state.vector_db:
 
     query = st.text_input(
@@ -309,8 +226,7 @@ if st.session_state.vector_db:
             # Direct page lookup — bypass vector search entirely
             target_page = int(page_match.group(1))
 
-            active_text_path = st.session_state.text_path or TEXT_PATH
-            target_content = get_page_content(active_text_path, target_page) if os.path.exists(active_text_path) else None
+            target_content = get_page_content(TEXT_PATH, target_page) if os.path.exists(TEXT_PATH) else None
 
             if target_content:
                 context = f"[Hal. {target_page}]\n{target_content}"
@@ -326,7 +242,7 @@ if st.session_state.vector_db:
                     for d in retrieved_docs
                 )
 
-                if not os.path.exists(active_text_path):
+                if not os.path.exists(TEXT_PATH):
                     st.warning("minna_text.txt tidak ditemukan, jadi menggunakan pencarian dari database vektor.")
 
             if show_debug:
@@ -337,8 +253,7 @@ if st.session_state.vector_db:
             # Direct lesson lookup to avoid semantic miss for exact lesson requests
             target_lesson = int(lesson_match.group(2))
 
-            active_text_path = st.session_state.text_path or TEXT_PATH
-            lesson_content = get_lesson_content(active_text_path, target_lesson) if os.path.exists(active_text_path) else None
+            lesson_content = get_lesson_content(TEXT_PATH, target_lesson) if os.path.exists(TEXT_PATH) else None
 
             if lesson_content:
                 context = f"[Pelajaran {target_lesson}]\n{lesson_content}"
@@ -374,7 +289,7 @@ if st.session_state.vector_db:
                     for d in final_docs
                 )
 
-                if not os.path.exists(active_text_path):
+                if not os.path.exists(TEXT_PATH):
                     st.warning("minna_text.txt tidak ditemukan, jadi menggunakan pencarian dari database vektor.")
 
             if show_debug:
@@ -421,23 +336,4 @@ Jawaban (berdasarkan konteks di atas):""")
         st.markdown(response)
 
 else:
-    st.info("👈 Klik **Muat Database yang Ada** atau **Proses ke Database** di sidebar untuk mulai.")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("""
-        #### 🆕 Pertama kali?
-        1. Jalankan `python run_ocr_once.py`
-        2. Klik **Proses ke Database** di sidebar
-        3. Mulai bertanya!
-        """)
-
-    with col2:
-        st.markdown("""
-        #### 🔁 Sudah punya database?
-        1. Klik **Muat Database yang Ada**
-        2. Langsung mulai bertanya!
-
-        _(Tidak perlu proses ulang)_
-        """)
+    st.error("Database belum siap di server. Hubungi admin untuk memastikan folder `chroma_db_jepang` ikut ter-deploy.")
